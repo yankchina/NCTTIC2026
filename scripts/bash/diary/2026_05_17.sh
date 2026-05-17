@@ -1,0 +1,1 @@
+psql -U postgres -d TIC2026 -f database/migrations/001_initial_schema.sql
