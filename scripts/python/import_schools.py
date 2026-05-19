@@ -147,12 +147,10 @@ def load_and_validate(excel_path: Path):
         errors = []
 
         school_name = clean_str(row.get("学校名称"))
-        province    = clean_str(row.get("所在省"))
+        province    = clean_str(row.get("所在省")) or "省名保密"  # 省份为空时使用默认值
 
         if not school_name:
             errors.append("学校名称为空")
-        if not province:
-            errors.append("所在省为空")
 
         # 收集未知标签（用于报告，不作为错误）
         tag_str = row.get("标签", "")
