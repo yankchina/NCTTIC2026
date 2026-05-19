@@ -4,7 +4,7 @@ import_schools.py
 将「中国高校数据」Excel 导入 PostgreSQL schools 表
 
 依赖：
-    pip install pandas openpyxl psycopg2-binary tabulate
+    pip install pandas openpyxl psycopg2-binary python-dotenv rich
 
 用法：
     python import_schools.py 中国高校数据-2025-10-07.xlsx --dry-run   # 仅预览
@@ -12,24 +12,41 @@ import_schools.py
 """
 
 import sys
+import os
 import argparse
 from pathlib import Path
+from collections import Counter
 
 import pandas as pd
 import psycopg2
 import psycopg2.extras
-from tabulate import tabulate
+from dotenv import load_dotenv
+from rich.console import Console
+from rich.table import Table
 
 # ─────────────────────────────────────────────────────────────
 # 配置区
 # ─────────────────────────────────────────────────────────────
 
+ROOT_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT_DIR / ".env")
+
+console = Console()
+
+
+def _get_port() -> int:
+    raw = os.getenv("PGPORT", "5432")
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"无效的 PGPORT: {raw}")
+
 DB_CONFIG = {
-    "host":     "localhost",
-    "port":     5432,
-    "dbname":   "TIC2026",
-    "user":     "postgres",
-    "password": "",
+    "host":     os.getenv("PGHOST", "localhost"),
+    "port":     _get_port(),
+    "dbname":   os.getenv("PGDATABASE", "TIC2026"),
+    "user":     os.getenv("PGUSER", "postgres"),
+    "password": os.getenv("PGPASSWORD", ""),
 }
 
 # 标签列 → school_category_type[] 的映射规则
@@ -137,7 +154,7 @@ def load_and_validate(excel_path: Path):
         unknown_tags : set[str]    未在映射表中出现的标签值
     """
     df = pd.read_excel(excel_path, dtype=str)
-    print(f"  读取完成：共 {len(df)} 行，列名：{list(df.columns)}")
+    console.print(f"[cyan]读取完成：共 {len(df)} 行，列名：{list(df.columns)}[/cyan]")
 
     valid_rows, error_rows = [], []
     unknown_tags: set[str] = set()
@@ -192,57 +209,71 @@ def load_and_validate(excel_path: Path):
 # ─────────────────────────────────────────────────────────────
 
 def print_preview(valid_rows: list, error_rows: list, unknown_tags: set):
-    print("\n" + "=" * 65)
-    print("  📊 导入预览")
-    print("=" * 65)
-    print(f"  ✅ 有效行：{len(valid_rows)} 条")
-    print(f"  ❌ 错误行：{len(error_rows)} 条")
+    console.rule("[bold cyan]导入预览")
+    console.print(f"[green]有效行：{len(valid_rows)} 条[/green]")
+    console.print(f"[red]错误行：{len(error_rows)} 条[/red]")
     if unknown_tags:
-        print(f"  ⚠️  未映射标签（已忽略）：{', '.join(sorted(unknown_tags))}")
+        console.print(
+            f"[yellow]未映射标签（已忽略）：{', '.join(sorted(unknown_tags))}[/yellow]"
+        )
 
     if error_rows:
-        print("\n【错误明细】")
-        print(tabulate(error_rows, headers="keys", tablefmt="rounded_outline"))
+        err_table = Table(title="错误明细")
+        err_table.add_column("行号", style="red", justify="right")
+        err_table.add_column("学校名称", style="white")
+        err_table.add_column("错误", style="yellow")
+        for row in error_rows:
+            err_table.add_row(str(row["行号"]), row["学校名称"], row["错误"])
+        console.print(err_table)
 
     # 按省份统计
-    from collections import Counter
     province_count = Counter(r["province"] for r in valid_rows)
-    print("\n【按省份统计（Top 15）】")
-    stats = [{"省份": p, "学校数": c}
-             for p, c in province_count.most_common(15)]
-    print(tabulate(stats, headers="keys", tablefmt="rounded_outline"))
+    province_table = Table(title="按省份统计（Top 15）")
+    province_table.add_column("省份", style="cyan")
+    province_table.add_column("学校数", style="green", justify="right")
+    for p, c in province_count.most_common(15):
+        province_table.add_row(p, str(c))
+    console.print(province_table)
 
     # 按类别统计
     cat_count: Counter = Counter()
     for r in valid_rows:
         for c in r["categories"]:
             cat_count[c] += 1
-    print("\n【按类别标签统计】")
-    cat_stats = [{"类别": k, "学校数": v}
-                 for k, v in cat_count.most_common()]
-    print(tabulate(cat_stats, headers="keys", tablefmt="rounded_outline"))
+    cat_table = Table(title="按类别标签统计")
+    cat_table.add_column("类别", style="magenta")
+    cat_table.add_column("学校数", style="green", justify="right")
+    for k, v in cat_count.most_common():
+        cat_table.add_row(k, str(v))
+    console.print(cat_table)
 
     # 按办学层次统计
     level_count = Counter(r["education_level"] or "(未知)" for r in valid_rows)
-    print("\n【按办学层次统计】")
-    print(tabulate([{"层次": k, "数量": v} for k, v in level_count.items()],
-                   headers="keys", tablefmt="rounded_outline"))
+    level_table = Table(title="按办学层次统计")
+    level_table.add_column("层次", style="blue")
+    level_table.add_column("数量", style="green", justify="right")
+    for k, v in level_count.items():
+        level_table.add_row(k, str(v))
+    console.print(level_table)
 
     # 数据预览（前10行）
-    print("\n【数据样例（前 10 行）】")
-    sample = [
-        {
-            "学校名称":  r["name"],
-            "编码":      r["official_unique_code"] or "-",
-            "省/市":    f"{r['province']} {r['city'] or ''}".strip(),
-            "层次":      r["education_level"] or "-",
-            "类别":      ",".join(r["categories"]) or "-",
-            "主管单位":  (r["supervisory_unit"] or "-")[:12],
-        }
-        for r in valid_rows[:10]
-    ]
-    print(tabulate(sample, headers="keys", tablefmt="rounded_outline"))
-    print()
+    sample_table = Table(title="数据样例（前 10 行）")
+    sample_table.add_column("学校名称", style="white")
+    sample_table.add_column("编码", style="cyan")
+    sample_table.add_column("省/市", style="blue")
+    sample_table.add_column("层次", style="green")
+    sample_table.add_column("类别", style="magenta")
+    sample_table.add_column("主管单位", style="yellow")
+    for r in valid_rows[:10]:
+        sample_table.add_row(
+            r["name"],
+            r["official_unique_code"] or "-",
+            f"{r['province']} {r['city'] or ''}".strip(),
+            r["education_level"] or "-",
+            ",".join(r["categories"]) or "-",
+            (r["supervisory_unit"] or "-")[:12],
+        )
+    console.print(sample_table)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -302,14 +333,20 @@ def do_import(valid_rows: list):
                         fail_details.append({"学校": row["name"], "错误": str(e)[:80]})
                         conn.rollback()             # 单条失败，回滚后继续
 
-        print(f"\n✅ 导入完成：新增 {inserted} 条，更新 {updated} 条，失败 {failed} 条。")
+        console.print(
+            f"\n[green]导入完成：新增 {inserted} 条，更新 {updated} 条，失败 {failed} 条。[/green]"
+        )
         if fail_details:
-            print("\n【写入失败明细】")
-            print(tabulate(fail_details, headers="keys", tablefmt="rounded_outline"))
+            fail_table = Table(title="写入失败明细")
+            fail_table.add_column("学校", style="white")
+            fail_table.add_column("错误", style="red")
+            for item in fail_details:
+                fail_table.add_row(item["学校"], item["错误"])
+            console.print(fail_table)
 
     except Exception as e:
         conn.rollback()
-        print(f"❌ 数据库连接或事务失败，已回滚：{e}")
+        console.print(f"[red]数据库连接或事务失败，已回滚：{e}[/red]")
         sys.exit(1)
     finally:
         conn.close()
@@ -336,24 +373,26 @@ def main():
 
     excel_path = Path(args.excel)
     if not excel_path.exists():
-        print(f"❌ 文件不存在：{excel_path}")
+        console.print(f"[red]文件不存在：{excel_path}[/red]")
         sys.exit(1)
 
-    print(f"\n📂 读取文件：{excel_path.resolve()}")
+    console.print(f"\n[bold cyan]读取文件：{excel_path.resolve()}[/bold cyan]")
     valid_rows, error_rows, unknown_tags = load_and_validate(excel_path)
 
     if args.limit:
         valid_rows = valid_rows[:args.limit]
-        print(f"  ⚠️  --limit {args.limit}，仅处理前 {args.limit} 条有效行")
+        console.print(
+            f"[yellow]--limit {args.limit}，仅处理前 {args.limit} 条有效行[/yellow]"
+        )
 
     print_preview(valid_rows, error_rows, unknown_tags)
 
     if args.dry_run:
-        print("ℹ️  --dry-run 模式，不写入数据库。")
+        console.print("[cyan]--dry-run 模式，不写入数据库。[/cyan]")
         return
 
     if not valid_rows:
-        print("⚠️  没有有效数据，退出。")
+        console.print("[yellow]没有有效数据，退出。[/yellow]")
         return
 
     prompt = (
@@ -362,7 +401,7 @@ def main():
         f"确认导入 {len(valid_rows)} 条记录到数据库？[y/N] "
     )
     if input(prompt).strip().lower() != "y":
-        print("已取消。")
+        console.print("[yellow]已取消。[/yellow]")
         return
 
     do_import(valid_rows)
