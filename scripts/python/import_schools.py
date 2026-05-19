@@ -27,7 +27,7 @@ from tabulate import tabulate
 DB_CONFIG = {
     "host":     "localhost",
     "port":     5432,
-    "dbname":   "seucfd",
+    "dbname":   "TIC2026",
     "user":     "postgres",
     "password": "",
 }
